@@ -1,3 +1,4 @@
+import functools
 import inspect
 
 
@@ -6,7 +7,10 @@ class _PlaceHolder(object):
         self.arg_name = arg_name
 
     def __str__(self):
-        return 'Not Specified Arg %s' % self.arg_name
+        return '<PlaceHolder for "%s">' % self.arg_name
+
+    def __repr__(self):
+        return 'Arg:"%s",%s' % (self.arg_name, super(_PlaceHolder, self).__repr__())
 
 
 class Args(dict):
@@ -20,8 +24,8 @@ class PartialObject(object):
     def __init__(self, callee, transmit_default=True):
         self._callee = callee
         self._args = Args()
-        self.magic_args = ()
-        self.magic_kwargs = {}
+        self.star_args = ()
+        self.star_kwargs = {}
         args_spec = inspect.getargspec(callee)
         self._args_spec = tuple(args_spec.args)
         self._args_spec_list = list(self._args_spec)
@@ -36,8 +40,6 @@ class PartialObject(object):
             self._args.update(self._default_args)
             for k in self._default_args:
                 self._args_spec_list.remove(k)
-        print self.__dict__
-        print args_spec
 
     @property
     def name(self):
@@ -49,23 +51,39 @@ class PartialObject(object):
 
     @property
     def args(self):
-        return [self._args.get(arg) for arg in self._args_spec]
+        return [self._args[arg] for arg in self._args_spec]
+
+    @property
+    def args_length(self):
+        return len(self._args_spec)
+
+    @property
+    def empty_args_length(self):
+        return len(self._args_spec_list)
 
     def add_args(self, args):
+        args_length = len(args)
+        if args_length > self.empty_args_length and not self._support_star_args:
+            raise TypeError(
+                "%s() takes at most %d argument (%d given)" % (self.name, self.empty_args_length, args_length))
         for arg in args:
             try:
                 arg_name = self._args_spec_list.pop(0)
                 self._args[arg_name] = arg
             except IndexError:
-                raise TypeError("%s() got multiple values for argument '%s'" % (self.name, arg_name))
+                self.star_args += (arg,)
 
     def add_kwargs(self, kwargs):
         for k, v in kwargs.items():
             if k in self._args_spec_list:
                 self._args_spec_list.remove(k)
                 self._args[k] = v
+            elif k in self._default_args:
+                self._args[k] = v
             else:
-                self.magic_kwargs[k] = v
+                if not self._support_star_kwargs:
+                    raise TypeError("%s() got an unexpected keyword argument '%s'" % (self.name, k))
+                self.star_kwargs[k] = v
 
     def __call__(self, *args, **kwargs):
         apply_now = kwargs.pop(self.APPLY_KEY, False)
@@ -90,8 +108,24 @@ class PartialObject(object):
         return ''
 
 
-def currying(function):
-    return PartialObject(function)
+def currying(*args, **kwargs):
+    if args and callable(args[0]):
+        function = args[0]
+
+        @functools.wraps(function)
+        def _generate_po(*_args, **_kwargs):
+            return PartialObject(function)(*_args, **_kwargs)
+
+        return _generate_po
+    else:
+        def _decorator(function):
+            @functools.wraps(function)
+            def _generate_po(*_args, **_kwargs):
+                return PartialObject(function, **kwargs)(*_args, **_kwargs)
+
+            return _generate_po
+
+        return _decorator
 
 
 if __name__ == '__main__':
@@ -103,15 +137,25 @@ if __name__ == '__main__':
 
 
     @currying
-    def pr(a, b=3):
+    def pr(a, c, b=3):
         print 'execute pr'
         return a + b
 
 
-    print pr(1)
-    #
-    # print print_number
-    # print [print_number]
-    # print print_number(1, 2, 3, s=1, x=1, y=2, f=3)
-    # print print_number(1, 2, 3, s=1, x=1, y=2, f=3).args
-    # print_number.original(1, 2, 3, s=1, x=1, y=2, f=3)
+    print pr
+    print pr(1, b=1).args
+    print pr(1, b=1)._support_star_args
+    print pr(1, b=1)._support_star_kwargs
+
+
+    def a(a=1):
+        pass
+
+
+        # a(1, 2)
+        #
+        # print print_number
+        # print [print_number]
+        # print print_number(1, 2, 3, s=1, x=1, y=2, f=3)
+        # print print_number(1, 2, 3, s=1, x=1, y=2, f=3).args
+        # print_number.original(1, 2, 3, s=1, x=1, y=2, f=3)
